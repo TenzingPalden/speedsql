@@ -12,6 +12,12 @@ const MAX_TIME           = 60
 const CORRECT_BONUS      = 10
 const CRITICAL_THRESHOLD = 0.30
 
+// ─── Focused Preparation ──────────────────────────────────────────────────────
+// Green overlay covers the editor pane for PREP_TIME seconds at the start of
+// every question, giving the player time to read the objective and schema
+// before the survival timer resumes ticking. "I'm Ready" cancels early.
+const PREP_TIME = 15
+
 // ─── Difficulty progression ───────────────────────────────────────────────────
 /**
  * The session always starts on Easy and advances automatically based on how
@@ -83,12 +89,43 @@ export default function GameScreen() {
   const [timeLeft, setTimeLeft] = useState(MAX_TIME)
   const intervalRef             = useRef(null)
 
-  /** Start the 1-second countdown on mount; clean up on unmount. */
+  // ── Focused-preparation state ─────────────────────────────────────────────
+  // prepMode gates the main timer: while true, the survival countdown is
+  // paused and the editor pane is covered by a green overlay. pausedRef
+  // mirrors prepMode so the 1 s interval callback can check it without being
+  // re-created on every toggle (which would miss sub-second boundaries).
+  const [prepMode, setPrepMode] = useState(true)
+  const [prepTime, setPrepTime] = useState(PREP_TIME)
+  const pausedRef               = useRef(true)  // starts paused — first prep
+  useEffect(() => { pausedRef.current = prepMode }, [prepMode])
+
+  /** Start the 1-second countdown on mount; clean up on unmount.
+   *  Skips ticks while pausedRef is true (prep mode). */
   useEffect(() => {
     intervalRef.current = setInterval(() => {
+      if (pausedRef.current) return
       setTimeLeft(prev => Math.max(0, prev - 1))
     }, 1000)
     return () => clearInterval(intervalRef.current)
+  }, [])
+
+  /** Prep countdown — independent 1 s tick that only runs while in prep mode.
+   *  When it hits 0 we auto-dismiss; "I'm Ready" does the same thing early. */
+  useEffect(() => {
+    if (!prepMode) return
+    const id = setInterval(() => {
+      setPrepTime(t => {
+        if (t <= 1) { setPrepMode(false); return PREP_TIME }
+        return t - 1
+      })
+    }, 1000)
+    return () => clearInterval(id)
+  }, [prepMode])
+
+  /** Handler for the "I'm Ready" button — skip the rest of the prep window. */
+  const dismissPrep = useCallback(() => {
+    setPrepMode(false)
+    setPrepTime(PREP_TIME)
   }, [])
 
   /**
@@ -152,6 +189,17 @@ export default function GameScreen() {
   /** Load the first (Easy) question on mount — correctCount starts at 0. */
   useEffect(() => { pickNextQuestion(0) }, [pickNextQuestion])
 
+  /**
+   * Re-arm prep mode every time a new question is loaded. Keyed on
+   * currentQuestion?.id so repeated renders of the same question don't
+   * restart the preparation window.
+   */
+  useEffect(() => {
+    if (!currentQuestion) return
+    setPrepMode(true)
+    setPrepTime(PREP_TIME)
+  }, [currentQuestion?.id])
+
   // ── Flash feedback ────────────────────────────────────────────────────────
   /**
    * flash = 'correct' | 'incorrect' | null
@@ -184,6 +232,9 @@ export default function GameScreen() {
    * before this callback so they appear correctly in the deps array.
    */
   const handleRunQuery = useCallback(() => {
+    // Block submissions during the preparation window — the editor is
+    // visually locked behind the green overlay and timer hasn't started.
+    if (prepMode) return
     const trimmed = sql.trim()
     if (!trimmed || !currentQuestion) return
 
@@ -195,10 +246,13 @@ export default function GameScreen() {
       // inside the setTimeout — state update (setCorrectCount) is async and
       // would not be visible to the closure by the time the timer fires.
       const newCount  = correctCount + 1
+      const newStreak = streak + 1
       const timeBonus = Math.floor(timeLeft * 2)   // 0–60 bonus pts based on speed
       setScore(s  => s + 100 + timeBonus)
-      setStreak(s => s + 1)
+      setStreak(newStreak)
       setCorrectCount(newCount)
+      // Track highest streak of the session for the GameOver screen.
+      if (newStreak > maxStreakRef.current) maxStreakRef.current = newStreak
       addTime()
       playCorrect()
       triggerFlash('correct')
@@ -212,20 +266,26 @@ export default function GameScreen() {
       triggerFlash('incorrect')
     }
   }, [
-    sql, currentQuestion, timeLeft, correctCount,
+    sql, currentQuestion, timeLeft, correctCount, streak, prepMode,
     addTime, playCorrect, playIncorrect, triggerFlash, pickNextQuestion,
   ])
 
   // ── Refs for gameover navigation ──────────────────────────────────────────
-  // Keep score, streak, and currentQuestion readable from the timeLeft effect
-  // without adding them to its dependency array (which would cause a spurious
-  // tick every time the score changes).
-  const scoreRef    = useRef(0)
-  const streakRef   = useRef(0)
-  const questionRef = useRef(null)
+  // Keep score, max streak, current question, and the player's in-progress SQL
+  // readable from the timeLeft effect without adding them to its dependency
+  // array (which would cause a spurious tick every time they change).
+  //
+  // maxStreakRef tracks the HIGHEST streak achieved during the run — distinct
+  // from the live `streak` state, which resets to 0 on every wrong answer.
+  // It is updated imperatively inside handleRunQuery so we always have the
+  // post-increment value synchronously, no sync-effect needed.
+  const scoreRef     = useRef(0)
+  const maxStreakRef = useRef(0)
+  const questionRef  = useRef(null)
+  const sqlRef       = useRef('')
   useEffect(() => { scoreRef.current    = score           }, [score])
-  useEffect(() => { streakRef.current   = streak          }, [streak])
   useEffect(() => { questionRef.current = currentQuestion }, [currentQuestion])
+  useEffect(() => { sqlRef.current      = sql             }, [sql])
 
   // ── Timer watcher ─────────────────────────────────────────────────────────
   /**
@@ -239,9 +299,10 @@ export default function GameScreen() {
       clearInterval(intervalRef.current)
       navigate('/gameover', {
         state: {
-          score:    scoreRef.current,
-          streak:   streakRef.current,
-          question: questionRef.current,
+          score:     scoreRef.current,
+          maxStreak: maxStreakRef.current,
+          question:  questionRef.current,
+          playerSql: sqlRef.current,
         },
       })
       return
@@ -312,6 +373,55 @@ export default function GameScreen() {
 
         {/* RIGHT — Monaco editor + toolbar */}
         <section className="flex-1 bg-surface-container-lowest flex flex-col relative overflow-hidden">
+
+          {/* ── Focused Preparation overlay ──────────────────────────────────
+                Covers the ENTIRE right pane (toolbar + editor + console) so
+                the player cannot start typing or click Run Query until they
+                either press "I'm Ready" or the 15-second timer expires.
+                Subtle green tint (#10b981 @ 18 %) keeps with the design-system
+                aesthetic — no neon, no hacker-green. A centred card holds the
+                countdown, a short instruction, and the primary CTA.
+          ── */}
+          {prepMode && (
+            <div
+              className="absolute inset-0 z-40 flex items-center justify-center
+                         backdrop-blur-[2px]"
+              style={{ backgroundColor: 'rgba(16, 185, 129, 0.18)' }}
+            >
+              <div className="flex flex-col items-center gap-5 glass
+                              border border-outline-variant/20 rounded
+                              px-12 py-10 max-w-sm text-center shadow-2xl">
+                <span className="font-display text-[10px] uppercase tracking-[0.25em]
+                                 text-secondary">
+                  Focused Preparation
+                </span>
+                <div className="flex items-baseline gap-2">
+                  <span className="font-display text-7xl font-extrabold text-white
+                                   tracking-tighter leading-none">
+                    {prepTime}
+                  </span>
+                  <span className="font-display text-xs uppercase tracking-widest
+                                   text-secondary">s</span>
+                </div>
+                <p className="text-on-surface/80 text-sm leading-relaxed">
+                  Review the objective and schema on the left.
+                  The survival timer starts when you're ready.
+                </p>
+                <button
+                  onClick={dismissPrep}
+                  className="mt-2 bg-primary text-on-primary px-6 py-2.5 rounded
+                             text-xs font-bold font-display uppercase tracking-widest
+                             hover:shadow-[0_0_15px_rgba(255,255,255,0.25)]
+                             active:scale-95 transition-all flex items-center gap-2"
+                >
+                  <span className="material-symbols-outlined text-sm filled">
+                    play_arrow
+                  </span>
+                  I&rsquo;m Ready
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Toolbar */}
           <div className="h-12 bg-surface-container-low border-b border-outline-variant/10
