@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background-color: #0b1326;
+    color: #dae2fd;
+    font-family: 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Material Symbols base settings */
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    font-family: 'Material Symbols Outlined';
+    font-weight: normal;
+    font-style: normal;
+    line-height: 1;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    -webkit-font-feature-settings: 'liga';
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Filled variant — used for play_arrow on the Play Game card */
+  .material-symbols-outlined.filled {
+    font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+
+  /* Ultra-thin custom scrollbars per design system */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #474747 transparent;
+  }
+  *::-webkit-scrollbar       { width: 4px; height: 4px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background-color: #474747; border-radius: 2px; }
+}
+
+/* ── Keyframe animations ─────────────────────────────────────────────────
+   Declared outside @layer so they are always emitted into the global scope
+   and remain reachable from the utility classes below.
+──────────────────────────────────────────────────────────────────────── */
+
+/* Correct / incorrect screen flash
+   Fades in fast (20 % of the duration) then fades out slowly.
+   Background-color is set via inline style so one keyframe handles both tints. */
+@keyframes screen-flash {
+  0%   { opacity: 0; }
+  20%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Critical-timer pulse
+   Scale-based (not opacity) so the number stays fully readable.
+   0.65 s cycle feels urgent without being distracting. */
+@keyframes critical-pulse {
+  0%, 100% { transform: scale(1);    }
+  50%       { transform: scale(1.18); }
+}
+
+/* ── Custom utility classes ──────────────────────────────────────────────── */
+@layer utilities {
+
+  /* Screen flash — mounts/unmounts per submission so animation always restarts */
+  .animate-flash {
+    animation: screen-flash 0.4s ease-out forwards;
+    pointer-events: none;
+  }
+
+  /* Critical-timer pulse — applied when < 30 % time remains */
+  .animate-critical {
+    animation: critical-pulse 0.65s ease-in-out infinite;
+    display: inline-block; /* transform: scale() needs a block context on inline text */
+    transform-origin: center;
+  }
+
+  /* Glassmorphism overlay — surface-container-high @ 70% + 20px blur */
+  .glass {
+    background-color: rgba(34, 42, 61, 0.7);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  /* Primary CTA metallic gradient (white → slate-blue @ 135°) */
+  .btn-primary-gradient {
+    background: linear-gradient(135deg, #ffffff 0%, #b9c8de 100%);
+  }
+
+  /* Ghost border for inputs / secondary elements */
+  .ghost-border {
+    border-color: rgba(71, 71, 71, 0.2);
+  }
+}
