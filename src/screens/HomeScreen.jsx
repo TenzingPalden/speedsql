@@ -1,10 +1,18 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import SettingsModal from '../components/SettingsModal'
+import { startEngine } from '../engine/sqlEngine'
+import { loadSoundOn, saveSoundOn } from '../lib/settings'
 
 export default function HomeScreen() {
   const navigate = useNavigate()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [soundOn, setSoundOn]           = useState(loadSoundOn)
+
+  useEffect(() => { saveSoundOn(soundOn) }, [soundOn])
+
+  // Boot the in-browser database now so it's ready by the first question.
+  useEffect(() => { startEngine() }, [])
 
   return (
     <div className="bg-surface text-on-surface flex flex-col min-h-screen selection:bg-primary selection:text-on-primary">
@@ -174,7 +182,11 @@ export default function HomeScreen() {
 
       {/* Settings modal */}
       {settingsOpen && (
-        <SettingsModal onClose={() => setSettingsOpen(false)} />
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          soundOn={soundOn}
+          onToggleSound={() => setSoundOn(s => !s)}
+        />
       )}
     </div>
   )
