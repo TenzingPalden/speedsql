@@ -258,6 +258,7 @@ ORDER BY created_at DESC;`,
         { product_id: 7, name: 'Mechanical Keyboard', category: 'Electronics', price: 149.99, stock_quantity: 120, is_available: true },
         { product_id: 8, name: 'Webcam HD',           category: 'Electronics', price: 79.99,  stock_quantity: 95,  is_available: true },
         { product_id: 9, name: 'Gaming Headset',      category: 'Electronics', price: 89.99,  stock_quantity: 200, is_available: true },
+        { product_id: 20, name: 'Sticky Notes Pack',  category: 'Stationery',  price: 5.99,   stock_quantity: 800, is_available: true },
       ],
     },
 
@@ -392,6 +393,7 @@ ORDER BY total_revenue DESC;`,
         { order_id: 1009, customer_id: 7, status: 'pending',   total_amount: 95.00,  created_at: '2023-10-02 09:00:00' },
         { order_id: 1010, customer_id: 3, status: 'pending',   total_amount: 55.00,  created_at: '2023-10-05 17:00:00' },
         { order_id: 1011, customer_id: 2, status: 'shipped',   total_amount: 80.00,  created_at: '2023-10-10 12:00:00' },
+        { order_id: 1012, customer_id: 2, status: 'pending',   total_amount: 64.00,  created_at: '2023-10-12 15:30:00' },
       ],
     },
 
@@ -579,9 +581,9 @@ ORDER BY p.name;`,
     expectedOutput: {
       columns: ['month', 'order_count', 'monthly_revenue'],
       rows: [
-        ['2023-01-01', '2', '239.49'],
-        ['2023-02-01', '2', '275.00'],
-        ['2023-03-01', '3', '515.50'],
+        ['2023-01-01 00:00:00', '2', '239.49'],
+        ['2023-02-01 00:00:00', '2', '275.00'],
+        ['2023-03-01 00:00:00', '3', '515.50'],
       ],
     },
 
@@ -692,10 +694,12 @@ ORDER BY department, salary_rank;`,
 
     sampleData: {
       orders: [
+        { order_id: 2000, customer_id: 4, status: 'delivered', total_amount: 310.00, created_at: '2023-09-28 10:15:00' },
         { order_id: 2001, customer_id: 1, status: 'delivered', total_amount: 149.99, created_at: '2023-10-03 09:00:00' },
         { order_id: 2002, customer_id: 2, status: 'delivered', total_amount: 89.50,  created_at: '2023-10-07 14:00:00' },
         { order_id: 2003, customer_id: 3, status: 'shipped',   total_amount: 220.00, created_at: '2023-10-14 11:30:00' },
         { order_id: 2004, customer_id: 1, status: 'pending',   total_amount: 55.00,  created_at: '2023-10-21 16:00:00' },
+        { order_id: 2005, customer_id: 2, status: 'pending',   total_amount: 98.00,  created_at: '2023-11-02 08:45:00' },
       ],
     },
 
