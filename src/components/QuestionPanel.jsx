@@ -6,8 +6,8 @@
  *   • Scrollable body   :
  *       – Objective / prompt
  *       – Schema table(s) — one section per table in question.schema
- *       – Sample data     — up to 4 rows per table
- *       – Expected output — column headers + up to 3 preview rows
+ *       – Sample data     — every row per table (answers are graded against all of them)
+ *       – Expected output — column headers + every expected row
  *
  * When `question` is null (loading), a centred spinner placeholder is shown
  * so the layout never shifts on first paint.
@@ -96,7 +96,7 @@ export default function QuestionPanel({ question }) {
           const rows = sampleData[table.tableName]
           if (!rows?.length) return null
           const cols = Object.keys(rows[0])
-          const preview = rows.slice(0, 4)
+          const preview = rows
 
           return (
             <div key={`sample-${table.tableName}`}>
@@ -160,9 +160,9 @@ export default function QuestionPanel({ question }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {expectedOutput.rows.slice(0, 3).map((row, ri) => (
+                  {expectedOutput.rows.map((row, ri) => (
                     <tr key={ri}
-                        className={ri < Math.min(expectedOutput.rows.length, 3) - 1
+                        className={ri < expectedOutput.rows.length - 1
                           ? 'border-b border-outline-variant/5' : ''}>
                       {row.map((cell, ci) => (
                         <td key={ci} className="px-5 py-3 text-sm font-mono text-on-surface">

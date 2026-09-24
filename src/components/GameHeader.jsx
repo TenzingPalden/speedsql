@@ -4,7 +4,7 @@
  * Layout (three zones, centre is absolutely positioned):
  *   LEFT   : SpeedSQL wordmark · "Main Menu" ghost button
  *   CENTRE : Survival Timer · Streak 🔥 · Score          [absolute pill]
- *   RIGHT  : Sound toggle · RUN QUERY primary button
+ *   RIGHT  : Sound toggle · Settings · RUN QUERY primary button
  *
  * Timer display rules
  * ───────────────────
@@ -18,8 +18,10 @@
  * @param {{
  *   onMainMenu:    () => void,
  *   onRunQuery:    () => void,
+ *   running:       boolean,  // a query is being graded — button shows progress
  *   soundOn:       boolean,
  *   onToggleSound: () => void,
+ *   onOpenSettings:() => void,
  *   timeLeft:      number,   // seconds remaining
  *   isCritical:    boolean,  // true when < 30 % of max time remains
  *   score:         number,   // current score
@@ -37,8 +39,10 @@ function fmt(seconds) {
 export default function GameHeader({
   onMainMenu,
   onRunQuery,
+  running    = false,
   soundOn,
   onToggleSound,
+  onOpenSettings,
   timeLeft   = 30,
   isCritical = false,
   score      = 0,
@@ -110,7 +114,7 @@ export default function GameHeader({
         </div>
       </div>
 
-      {/* ── RIGHT — sound toggle + RUN QUERY ── */}
+      {/* ── RIGHT — sound toggle + settings + RUN QUERY ── */}
       <div className="flex items-center gap-4">
         {/* Sound toggle */}
         <button
@@ -123,16 +127,29 @@ export default function GameHeader({
           </span>
         </button>
 
+        {/* Settings */}
+        <button
+          onClick={onOpenSettings}
+          aria-label="Settings"
+          className="text-secondary hover:text-white transition-colors"
+        >
+          <span className="material-symbols-outlined text-[20px]">settings</span>
+        </button>
+
         {/* RUN QUERY — primary CTA */}
         <button
           onClick={onRunQuery}
+          disabled={running}
           className="bg-primary text-on-primary px-5 py-1.5 rounded text-sm font-bold
                      font-display uppercase tracking-wide flex items-center gap-2
                      hover:shadow-[0_0_15px_rgba(255,255,255,0.2)]
-                     active:scale-95 opacity-90 hover:opacity-100 transition-all"
+                     active:scale-95 opacity-90 hover:opacity-100 transition-all
+                     disabled:opacity-60 disabled:cursor-wait"
         >
-          <span className="material-symbols-outlined text-sm filled">play_arrow</span>
-          Run Query
+          <span className="material-symbols-outlined text-sm filled">
+            {running ? 'hourglass_top' : 'play_arrow'}
+          </span>
+          {running ? 'Running…' : 'Run Query'}
         </button>
       </div>
     </header>

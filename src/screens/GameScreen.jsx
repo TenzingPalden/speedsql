@@ -4,8 +4,13 @@ import GameHeader from '../components/GameHeader'
 import QuestionPanel from '../components/QuestionPanel'
 import SqlEditor from '../components/SqlEditor'
 import SettingsModal from '../components/SettingsModal'
+import ConsolePanel from '../components/ConsolePanel'
+import HistoryMenu from '../components/HistoryMenu'
 import { useSounds } from '../hooks/useSounds'
 import { getByDifficulty } from '../data/questions'
+import { checkAnswer, prepareQuestion, useSqlEngine } from '../engine/sqlEngine'
+import { loadDifficulty, loadSoundOn, saveSoundOn } from '../lib/settings'
+import { version as appVersion } from '../../package.json'
 
 // ─── Timer constants ──────────────────────────────────────────────────────────
 const MAX_TIME           = 60
@@ -20,47 +25,35 @@ const PREP_TIME = 15
 
 // ─── Difficulty progression ───────────────────────────────────────────────────
 /**
- * The session always starts on Easy and advances automatically based on how
- * many questions the player has answered correctly, regardless of the
- * difficulty chosen in Settings (that preference is kept for future modes).
+ * Difficulty advances automatically with the player's progress:
  *
- *   Easy   → first  5 correct answers  (questions 1–5)
- *   Medium → next   5 correct answers  (questions 6–10)
- *   Hard   → 10th correct answer onward, cycling the Hard pool indefinitely
+ *   Easy   → progress 0–4
+ *   Medium → progress 5–9
+ *   Hard   → progress 10+, cycling the Hard pool indefinitely
+ *
+ * progress = START_OFFSET[starting difficulty] + correct answers so far, so
+ * the Starting Difficulty setting simply skips the earlier tiers.
  *
  * These thresholds align exactly with the 5-question pools per tier in
  * questions.js so the player sees every Easy question before any Medium one.
  */
-const EASY_THRESHOLD   = 5   // correctCount < 5  → Easy
-const MEDIUM_THRESHOLD = 10  // correctCount < 10 → Medium, else Hard
+const EASY_THRESHOLD   = 5   // progress < 5  → Easy
+const MEDIUM_THRESHOLD = 10  // progress < 10 → Medium, else Hard
 
-function getDifficulty(correctCount) {
-  if (correctCount < EASY_THRESHOLD)   return 'Easy'
-  if (correctCount < MEDIUM_THRESHOLD) return 'Medium'
+const START_OFFSET = { Easy: 0, Medium: EASY_THRESHOLD, Hard: MEDIUM_THRESHOLD }
+
+function getDifficulty(progress) {
+  if (progress < EASY_THRESHOLD)   return 'Easy'
+  if (progress < MEDIUM_THRESHOLD) return 'Medium'
   return 'Hard'
 }
 
-// ─── SQL normaliser ───────────────────────────────────────────────────────────
-/**
- * Reduce a SQL string to a canonical form for loose comparison.
- *
- *   • Lowercase everything (keywords, identifiers, literals)
- *   • Strip single-line (-- …) and block (/* … *\/) comments
- *   • Drop a trailing semicolon
- *   • Collapse every whitespace run to a single space
- *
- * This lets the player use any indentation or capitalisation style and still
- * match the stored correctSql as long as the query structure is identical.
- */
-function normalizeSql(raw) {
-  return raw
-    .trim()
-    .toLowerCase()
-    .replace(/--[^\n]*/g, ' ')           // strip  --  comments
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')   // strip  /* */ comments
-    .replace(/;+\s*$/, '')               // drop trailing semicolon
-    .replace(/\s+/g, ' ')               // collapse all whitespace
-    .trim()
+/** Footer status dot colour per engine status. */
+const ENGINE_DOT = {
+  idle:    'bg-amber-400',
+  loading: 'bg-amber-400 animate-pulse',
+  ready:   'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]',
+  error:   'bg-error',
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,16 +62,32 @@ export default function GameScreen() {
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [sql, setSql]               = useState('')
-  const [soundOn, setSoundOn]       = useState(
-    () => localStorage.getItem('speedsql-sound') !== 'false'
-  )
+  const [soundOn, setSoundOn]       = useState(loadSoundOn)
   const [settingsOpen, setSettings] = useState(false)
   const [consoleOpen,  setConsole]  = useState(false)
+  const [historyOpen,  setHistoryOpen] = useState(false)
 
   /** Persist sound preference on every toggle. */
+  useEffect(() => { saveSoundOn(soundOn) }, [soundOn])
+
+  // ── SQL engine (in-browser Postgres) ──────────────────────────────────────
+  const engine = useSqlEngine()
+  /** True while a submission is being graded — blocks double submits. */
+  const [running, setRunning] = useState(false)
+  const runningRef            = useRef(false)
+  /** Most recent graded run, shown in the Console panel. */
+  const [lastRun, setLastRun] = useState(null)
+  /** Every submission this game, newest first, for the History menu. */
+  const [history, setHistory] = useState([])
+  const historyIdRef          = useRef(0)
+
+  /** Guards async grading against landing after navigation to Game Over.
+   *  Set on every mount — StrictMode mounts, unmounts and remounts in dev. */
+  const mountedRef = useRef(false)
   useEffect(() => {
-    localStorage.setItem('speedsql-sound', String(soundOn))
-  }, [soundOn])
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   // ── Sound effects ─────────────────────────────────────────────────────────
   // All three play functions are stable references (useSounds uses refs internally).
@@ -91,13 +100,14 @@ export default function GameScreen() {
 
   // ── Focused-preparation state ─────────────────────────────────────────────
   // prepMode gates the main timer: while true, the survival countdown is
-  // paused and the editor pane is covered by a green overlay. pausedRef
-  // mirrors prepMode so the 1 s interval callback can check it without being
-  // re-created on every toggle (which would miss sub-second boundaries).
+  // paused and the editor pane is covered by a green overlay. The open
+  // Settings modal pauses the game too. pausedRef mirrors both so the 1 s
+  // interval callback can check it without being re-created on every toggle
+  // (which would miss sub-second boundaries).
   const [prepMode, setPrepMode] = useState(true)
   const [prepTime, setPrepTime] = useState(PREP_TIME)
   const pausedRef               = useRef(true)  // starts paused — first prep
-  useEffect(() => { pausedRef.current = prepMode }, [prepMode])
+  useEffect(() => { pausedRef.current = prepMode || settingsOpen }, [prepMode, settingsOpen])
 
   /** Start the 1-second countdown on mount; clean up on unmount.
    *  Skips ticks while pausedRef is true (prep mode). */
@@ -112,7 +122,7 @@ export default function GameScreen() {
   /** Prep countdown — independent 1 s tick that only runs while in prep mode.
    *  When it hits 0 we auto-dismiss; "I'm Ready" does the same thing early. */
   useEffect(() => {
-    if (!prepMode) return
+    if (!prepMode || settingsOpen) return
     const id = setInterval(() => {
       setPrepTime(t => {
         if (t <= 1) { setPrepMode(false); return PREP_TIME }
@@ -120,7 +130,7 @@ export default function GameScreen() {
       })
     }, 1000)
     return () => clearInterval(id)
-  }, [prepMode])
+  }, [prepMode, settingsOpen])
 
   /** Handler for the "I'm Ready" button — skip the rest of the prep window. */
   const dismissPrep = useCallback(() => {
@@ -143,10 +153,12 @@ export default function GameScreen() {
   const [streak,       setStreak]       = useState(0)
   /**
    * correctCount — total questions answered correctly this session.
-   * getDifficulty(correctCount) derives the active tier; advancing it
-   * automatically escalates difficulty without any extra state.
+   * getDifficulty(startOffset + correctCount) derives the active tier;
+   * advancing it automatically escalates difficulty without any extra state.
    */
   const [correctCount, setCorrectCount] = useState(0)
+  /** Read once per game — changing the setting mid-game applies next game. */
+  const [startOffset] = useState(() => START_OFFSET[loadDifficulty()])
 
   /**
    * seenByDiffRef — tracks seen question IDs separately per difficulty tier.
@@ -157,10 +169,10 @@ export default function GameScreen() {
   const seenByDiffRef = useRef({ Easy: new Set(), Medium: new Set(), Hard: new Set() })
 
   /**
-   * pickNextQuestion(count) — selects a random unseen question from the tier
-   * that corresponds to `count` correct answers so far.
+   * pickNextQuestion(progress) — selects a random unseen question from the
+   * tier that corresponds to `progress` (startOffset + correct answers).
    *
-   * Accepting count as a parameter (rather than reading state) keeps the
+   * Accepting progress as a parameter (rather than reading state) keeps the
    * callback stable ([] deps) so it is safe to list in handleRunQuery's deps
    * and call from a setTimeout without stale-closure issues.
    *
@@ -169,8 +181,8 @@ export default function GameScreen() {
    * This means Hard questions repeat once all 5 are exhausted, while Easy and
    * Medium questions each appear exactly once before the tier advances.
    */
-  const pickNextQuestion = useCallback((count) => {
-    const difficulty = getDifficulty(count)
+  const pickNextQuestion = useCallback((progress) => {
+    const difficulty = getDifficulty(progress)
     const seenSet    = seenByDiffRef.current[difficulty]
     const pool       = getByDifficulty(difficulty)
     if (!pool.length) return
@@ -186,8 +198,8 @@ export default function GameScreen() {
     setCurrentQuestion(next)
   }, [])
 
-  /** Load the first (Easy) question on mount — correctCount starts at 0. */
-  useEffect(() => { pickNextQuestion(0) }, [pickNextQuestion])
+  /** Load the first question on mount, from the chosen starting tier. */
+  useEffect(() => { pickNextQuestion(startOffset) }, [pickNextQuestion, startOffset])
 
   /**
    * Re-arm prep mode every time a new question is loaded. Keyed on
@@ -198,6 +210,8 @@ export default function GameScreen() {
     if (!currentQuestion) return
     setPrepMode(true)
     setPrepTime(PREP_TIME)
+    // Compute the reference result while the player reads the question.
+    prepareQuestion(currentQuestion)
   }, [currentQuestion?.id])
 
   // ── Flash feedback ────────────────────────────────────────────────────────
@@ -224,30 +238,52 @@ export default function GameScreen() {
    * handleRunQuery — the core validation callback, wired to both Run Query
    * buttons (header and toolbar).
    *
-   * Correct  → +100 pts + time-left bonus, streak++, +10 s, advance question.
-   * Incorrect → streak resets to 0, no time change, red flash.
-   * Empty    → silent no-op (no penalty).
+   * The query runs against the question's sample data in the in-browser
+   * Postgres and is graded by its *result* (see engine/sqlEngine.js), so any
+   * query that returns the right rows passes.
    *
-   * Dependency order matters: addTime and timeLeft must both be declared
-   * before this callback so they appear correctly in the deps array.
+   * Correct   → +100 pts + time-left bonus, streak++, +10 s, advance question.
+   * Incorrect → streak resets to 0, no time change, red flash, console opens.
+   * SQL error → same as incorrect; the console shows Postgres's message.
+   * Empty     → silent no-op (no penalty).
    */
-  const handleRunQuery = useCallback(() => {
-    // Block submissions during the preparation window — the editor is
-    // visually locked behind the green overlay and timer hasn't started.
-    if (prepMode) return
-    const trimmed = sql.trim()
-    if (!trimmed || !currentQuestion) return
+  const handleRunQuery = useCallback(async () => {
+    // Block submissions during the preparation window (editor is locked
+    // behind the green overlay), while paused, and while already grading.
+    if (prepMode || settingsOpen || runningRef.current) return
+    const trimmed  = sql.trim()
+    const question = currentQuestion
+    if (!trimmed || !question) return
 
-    const isCorrect =
-      normalizeSql(trimmed) === normalizeSql(currentQuestion.correctSql)
+    runningRef.current = true
+    setRunning(true)
+    let outcome
+    try {
+      outcome = await checkAnswer(question, trimmed)
+    } finally {
+      runningRef.current = false
+      if (mountedRef.current) setRunning(false)
+    }
 
-    if (isCorrect) {
+    // Time may have run out, or the player left, while the query ran.
+    if (!mountedRef.current || questionRef.current?.id !== question.id) return
+
+    setLastRun(outcome)
+    setHistory(h => [{
+      id:            ++historyIdRef.current,
+      questionId:    question.id,
+      questionTitle: question.title,
+      sql:           trimmed,
+      verdict:       outcome.verdict,
+    }, ...h])
+
+    if (outcome.verdict === 'correct') {
       // Compute the new count synchronously so pickNextQuestion receives it
       // inside the setTimeout — state update (setCorrectCount) is async and
       // would not be visible to the closure by the time the timer fires.
       const newCount  = correctCount + 1
       const newStreak = streak + 1
-      const timeBonus = Math.floor(timeLeft * 2)   // 0–60 bonus pts based on speed
+      const timeBonus = Math.floor(timeLeftRef.current * 2)   // speed bonus
       setScore(s  => s + 100 + timeBonus)
       setStreak(newStreak)
       setCorrectCount(newCount)
@@ -256,17 +292,21 @@ export default function GameScreen() {
       addTime()
       playCorrect()
       triggerFlash('correct')
-      // 320 ms delay: green flash is visible before the panel swaps.
-      // Pass newCount so pickNextQuestion derives the correct next tier
-      // without waiting for the setCorrectCount state update to commit.
-      setTimeout(() => pickNextQuestion(newCount), 320)
+      // 320 ms delay: green flash is visible before the panel swaps. Keep
+      // submissions locked until then so a double-click can't score twice.
+      runningRef.current = true
+      setTimeout(() => {
+        runningRef.current = false
+        if (mountedRef.current) pickNextQuestion(startOffset + newCount)
+      }, 320)
     } else {
       setStreak(0)
+      setConsole(true)
       playIncorrect()
       triggerFlash('incorrect')
     }
   }, [
-    sql, currentQuestion, timeLeft, correctCount, streak, prepMode,
+    sql, currentQuestion, correctCount, streak, prepMode, settingsOpen, startOffset,
     addTime, playCorrect, playIncorrect, triggerFlash, pickNextQuestion,
   ])
 
@@ -283,6 +323,8 @@ export default function GameScreen() {
   const maxStreakRef = useRef(0)
   const questionRef  = useRef(null)
   const sqlRef       = useRef('')
+  const timeLeftRef  = useRef(MAX_TIME)
+  useEffect(() => { timeLeftRef.current = timeLeft        }, [timeLeft])
   useEffect(() => { scoreRef.current    = score           }, [score])
   useEffect(() => { questionRef.current = currentQuestion }, [currentQuestion])
   useEffect(() => { sqlRef.current      = sql             }, [sql])
@@ -311,6 +353,29 @@ export default function GameScreen() {
       playTick(timeLeft)
     }
   }, [timeLeft, navigate, playTick])
+
+  // ── Derived engine labels ─────────────────────────────────────────────────
+  const engineLabel = {
+    idle:    'Starting Postgres…',
+    loading: 'Starting Postgres…',
+    ready:   `PostgreSQL ${engine.version}`,
+    error:   'Database unavailable',
+  }[engine.status]
+
+  const engineFooter = {
+    idle:    'Engine: starting',
+    loading: 'Engine: starting',
+    ready:   'Engine: in-browser Postgres (PGlite)',
+    error:   'Engine: offline — text matching',
+  }[engine.status]
+
+  const LAST_RUN_LABEL = { correct: 'correct', incorrect: 'incorrect', error: 'SQL error' }
+  const consoleStatus =
+      running                   ? 'Running…'
+    : lastRun                   ? `Last run: ${LAST_RUN_LABEL[lastRun.verdict]}`
+    : engine.status === 'ready' ? 'Ready'
+    : engine.status === 'error' ? 'Database unavailable — answers compared as text'
+    :                             'Starting database…'
 
   // ── Derived timer values ──────────────────────────────────────────────────
   /** Capped at 100 so the bar never overflows when addTime pushes past MAX_TIME. */
@@ -341,8 +406,10 @@ export default function GameScreen() {
       <GameHeader
         onMainMenu    ={() => navigate('/')}
         onRunQuery    ={handleRunQuery}
+        running       ={running}
         soundOn       ={soundOn}
         onToggleSound ={() => setSoundOn(s => !s)}
+        onOpenSettings={() => setSettings(true)}
         timeLeft      ={timeLeft}
         isCritical    ={isCritical}
         score         ={score}
@@ -426,31 +493,52 @@ export default function GameScreen() {
           {/* Toolbar */}
           <div className="h-12 bg-surface-container-low border-b border-outline-variant/10
                           flex items-center justify-between px-4 flex-shrink-0">
-            {/* DB badge */}
+            {/* DB badge — reflects the real in-browser engine */}
             <div className="flex items-center gap-1">
-              <div className="flex items-center gap-2 bg-surface-container-lowest px-3 py-1
-                              rounded text-xs text-secondary border border-outline-variant/10">
+              <div
+                title={engine.error ?? undefined}
+                className="flex items-center gap-2 bg-surface-container-lowest px-3 py-1
+                           rounded text-xs text-secondary border border-outline-variant/10"
+              >
                 <span className="material-symbols-outlined text-sm">database</span>
-                <span className="font-mono">PostgreSQL 15</span>
+                <span className="font-mono">{engineLabel}</span>
               </div>
             </div>
 
             {/* History + Run Query */}
             <div className="flex items-center gap-3">
-              <button className="flex items-center gap-2 text-secondary hover:text-white
-                                 transition-colors text-xs px-2">
-                <span className="material-symbols-outlined text-sm">history</span>
-                <span>History</span>
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setHistoryOpen(o => !o)}
+                  aria-expanded={historyOpen}
+                  className="flex items-center gap-2 text-secondary hover:text-white
+                             transition-colors text-xs px-2"
+                >
+                  <span className="material-symbols-outlined text-sm">history</span>
+                  <span>History{history.length ? ` (${history.length})` : ''}</span>
+                </button>
+                {historyOpen && (
+                  <HistoryMenu
+                    entries={history}
+                    currentQuestionId={currentQuestion?.id ?? null}
+                    onSelect={entrySql => { setSql(entrySql); setHistoryOpen(false) }}
+                    onClose={() => setHistoryOpen(false)}
+                  />
+                )}
+              </div>
               <button
                 onClick={handleRunQuery}
+                disabled={running}
                 className="bg-primary text-on-primary px-5 py-1.5 rounded text-sm font-bold
                            font-display uppercase tracking-wide flex items-center gap-2
                            hover:shadow-[0_0_15px_rgba(255,255,255,0.2)]
-                           active:scale-95 opacity-90 hover:opacity-100 transition-all"
+                           active:scale-95 opacity-90 hover:opacity-100 transition-all
+                           disabled:opacity-60 disabled:cursor-wait"
               >
-                <span className="material-symbols-outlined text-sm filled">play_arrow</span>
-                Run Query
+                <span className="material-symbols-outlined text-sm filled">
+                  {running ? 'hourglass_top' : 'play_arrow'}
+                </span>
+                {running ? 'Running…' : 'Run Query'}
               </button>
             </div>
           </div>
@@ -466,6 +554,9 @@ export default function GameScreen() {
             </div>
           </div>
 
+          {/* Console output — opens automatically on a wrong answer */}
+          {consoleOpen && <ConsolePanel lastRun={lastRun} />}
+
           {/* Console bar */}
           <div className="h-10 bg-surface-container border-t border-outline-variant/20
                           flex items-center justify-between px-6 flex-shrink-0">
@@ -478,7 +569,7 @@ export default function GameScreen() {
                 <span className="material-symbols-outlined text-sm">terminal</span>
                 <span>Console</span>
               </button>
-              <span className="text-secondary/40 text-xs">Ready</span>
+              <span className="text-secondary/60 text-xs">{consoleStatus}</span>
             </div>
             <button
               onClick={() => setConsole(o => !o)}
@@ -514,22 +605,26 @@ export default function GameScreen() {
           </div>
         </div>
         <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500
-                             shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+          <div className="flex items-center gap-2" title={engine.error ?? undefined}>
+            <span className={`w-1.5 h-1.5 rounded-full ${ENGINE_DOT[engine.status]}`} />
             <span className="font-display text-[10px] uppercase tracking-widest">
-              Server: Production-US-East
+              {engineFooter}
             </span>
           </div>
           <span className="font-display text-[10px] uppercase tracking-widest text-secondary/40">
-            v2.4.1-stable
+            v{appVersion}
           </span>
         </div>
       </footer>
 
       {/* ── Settings modal ── */}
       {settingsOpen && (
-        <SettingsModal onClose={() => setSettings(false)} />
+        <SettingsModal
+          onClose={() => setSettings(false)}
+          soundOn={soundOn}
+          onToggleSound={() => setSoundOn(s => !s)}
+          inGame
+        />
       )}
     </div>
   )
