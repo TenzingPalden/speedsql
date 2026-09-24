@@ -10,6 +10,7 @@ import { useSounds } from '../hooks/useSounds'
 import { getByDifficulty } from '../data/questions'
 import { checkAnswer, prepareQuestion, useSqlEngine } from '../engine/sqlEngine'
 import { loadDifficulty, loadSoundOn, saveSoundOn } from '../lib/settings'
+import { recordGame } from '../lib/stats'
 import { version as appVersion } from '../../package.json'
 
 // ─── Timer constants ──────────────────────────────────────────────────────────
@@ -235,8 +236,8 @@ export default function GameScreen() {
 
   // ── Answer checker ────────────────────────────────────────────────────────
   /**
-   * handleRunQuery — the core validation callback, wired to both Run Query
-   * buttons (header and toolbar).
+   * handleRunQuery — the core validation callback, wired to the toolbar's
+   * Run Query button and the Shift+Enter shortcut.
    *
    * The query runs against the question's sample data in the in-browser
    * Postgres and is graded by its *result* (see engine/sqlEngine.js), so any
@@ -324,7 +325,11 @@ export default function GameScreen() {
   const questionRef  = useRef(null)
   const sqlRef       = useRef('')
   const timeLeftRef  = useRef(MAX_TIME)
+  const correctRef   = useRef(0)
+  const attemptsRef  = useRef(0)
   useEffect(() => { timeLeftRef.current = timeLeft        }, [timeLeft])
+  useEffect(() => { correctRef.current  = correctCount    }, [correctCount])
+  useEffect(() => { attemptsRef.current = history.length  }, [history])
   useEffect(() => { scoreRef.current    = score           }, [score])
   useEffect(() => { questionRef.current = currentQuestion }, [currentQuestion])
   useEffect(() => { sqlRef.current      = sql             }, [sql])
@@ -339,8 +344,16 @@ export default function GameScreen() {
   useEffect(() => {
     if (timeLeft === 0) {
       clearInterval(intervalRef.current)
+      // Fold this game into the lifetime stats shown on the Home screen.
+      const { isNewBest } = recordGame({
+        score:     scoreRef.current,
+        maxStreak: maxStreakRef.current,
+        correct:   correctRef.current,
+        attempts:  attemptsRef.current,
+      })
       navigate('/gameover', {
         state: {
+          isNewBest,
           score:     scoreRef.current,
           maxStreak: maxStreakRef.current,
           question:  questionRef.current,
@@ -353,6 +366,25 @@ export default function GameScreen() {
       playTick(timeLeft)
     }
   }, [timeLeft, navigate, playTick])
+
+  // ── Keyboard shortcut ─────────────────────────────────────────────────────
+  /**
+   * Shift+Enter runs the query from anywhere on the page. Inside the editor
+   * Monaco handles it (SqlEditor's onRun) so it doesn't insert a newline;
+   * this listener covers focus everywhere else.
+   */
+  const runQueryRef = useRef(handleRunQuery)
+  useEffect(() => { runQueryRef.current = handleRunQuery }, [handleRunQuery])
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key !== 'Enter' || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return
+      if (e.target instanceof Element && e.target.closest('.monaco-editor')) return
+      e.preventDefault()
+      runQueryRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // ── Derived engine labels ─────────────────────────────────────────────────
   const engineLabel = {
@@ -405,8 +437,6 @@ export default function GameScreen() {
       {/* ── 1. Game header ── */}
       <GameHeader
         onMainMenu    ={() => navigate('/')}
-        onRunQuery    ={handleRunQuery}
-        running       ={running}
         soundOn       ={soundOn}
         onToggleSound ={() => setSoundOn(s => !s)}
         onOpenSettings={() => setSettings(true)}
@@ -539,6 +569,7 @@ export default function GameScreen() {
                   {running ? 'hourglass_top' : 'play_arrow'}
                 </span>
                 {running ? 'Running…' : 'Run Query'}
+                <kbd className="font-mono text-xs font-normal normal-case opacity-70">⇧↵</kbd>
               </button>
             </div>
           </div>
@@ -549,6 +580,7 @@ export default function GameScreen() {
               <SqlEditor
                 value={sql}
                 onChange={setSql}
+                onRun={handleRunQuery}
                 questionId={currentQuestion?.id ?? null}
               />
             </div>

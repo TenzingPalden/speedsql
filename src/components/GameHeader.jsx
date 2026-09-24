@@ -4,7 +4,9 @@
  * Layout (three zones, centre is absolutely positioned):
  *   LEFT   : SpeedSQL wordmark · "Main Menu" ghost button
  *   CENTRE : Survival Timer · Streak 🔥 · Score          [absolute pill]
- *   RIGHT  : Sound toggle · Settings · RUN QUERY primary button
+ *   RIGHT  : Sound toggle · Settings
+ *
+ * Run Query lives in the editor toolbar (GameScreen), next to the SQL it runs.
  *
  * Timer display rules
  * ───────────────────
@@ -17,8 +19,6 @@
  *
  * @param {{
  *   onMainMenu:    () => void,
- *   onRunQuery:    () => void,
- *   running:       boolean,  // a query is being graded — button shows progress
  *   soundOn:       boolean,
  *   onToggleSound: () => void,
  *   onOpenSettings:() => void,
@@ -38,8 +38,6 @@ function fmt(seconds) {
 
 export default function GameHeader({
   onMainMenu,
-  onRunQuery,
-  running    = false,
   soundOn,
   onToggleSound,
   onOpenSettings,
@@ -114,7 +112,7 @@ export default function GameHeader({
         </div>
       </div>
 
-      {/* ── RIGHT — sound toggle + settings + RUN QUERY ── */}
+      {/* ── RIGHT — sound toggle + settings ── */}
       <div className="flex items-center gap-4">
         {/* Sound toggle */}
         <button
@@ -134,22 +132,6 @@ export default function GameHeader({
           className="text-secondary hover:text-white transition-colors"
         >
           <span className="material-symbols-outlined text-[20px]">settings</span>
-        </button>
-
-        {/* RUN QUERY — primary CTA */}
-        <button
-          onClick={onRunQuery}
-          disabled={running}
-          className="bg-primary text-on-primary px-5 py-1.5 rounded text-sm font-bold
-                     font-display uppercase tracking-wide flex items-center gap-2
-                     hover:shadow-[0_0_15px_rgba(255,255,255,0.2)]
-                     active:scale-95 opacity-90 hover:opacity-100 transition-all
-                     disabled:opacity-60 disabled:cursor-wait"
-        >
-          <span className="material-symbols-outlined text-sm filled">
-            {running ? 'hourglass_top' : 'play_arrow'}
-          </span>
-          {running ? 'Running…' : 'Run Query'}
         </button>
       </div>
     </header>

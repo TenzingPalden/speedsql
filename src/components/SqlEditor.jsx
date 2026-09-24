@@ -15,10 +15,11 @@ import Editor from '@monaco-editor/react'
  * @param {{
  *   value:      string,
  *   onChange:   (v: string) => void,
+ *   onRun?:     () => void,               // Shift+Enter inside the editor
  *   questionId: string | number | null,  // change triggers a hard clear
  * }} props
  */
-export default function SqlEditor({ value, onChange, questionId = null }) {
+export default function SqlEditor({ value, onChange, onRun, questionId = null }) {
   /**
    * editorRef lets us call Monaco's imperative API directly.
    * We use editor.setValue('') on question change rather than relying on
@@ -26,6 +27,10 @@ export default function SqlEditor({ value, onChange, questionId = null }) {
    * occasionally skip an update when the incoming value is an empty string.
    */
   const editorRef = useRef(null)
+
+  /** Latest onRun — the Monaco command is registered once, on mount. */
+  const onRunRef = useRef(onRun)
+  useEffect(() => { onRunRef.current = onRun }, [onRun])
 
   /**
    * When questionId changes (new question loaded), wipe the editor content
@@ -44,6 +49,8 @@ export default function SqlEditor({ value, onChange, questionId = null }) {
 
   function handleMount(editor, monaco) {
     editorRef.current = editor
+    // Shift+Enter runs the query instead of inserting a newline.
+    editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => onRunRef.current?.())
     // ── Define SpeedSQL dark theme ──
     monaco.editor.defineTheme('speedsql', {
       base: 'vs-dark',

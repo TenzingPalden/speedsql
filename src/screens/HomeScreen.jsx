@@ -3,11 +3,17 @@ import { useNavigate } from 'react-router-dom'
 import SettingsModal from '../components/SettingsModal'
 import { startEngine } from '../engine/sqlEngine'
 import { loadSoundOn, saveSoundOn } from '../lib/settings'
+import { loadStats } from '../lib/stats'
 
 export default function HomeScreen() {
   const navigate = useNavigate()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [soundOn, setSoundOn]           = useState(loadSoundOn)
+  const [stats]                         = useState(loadStats)
+  const played   = stats.gamesPlayed > 0
+  const accuracy = stats.totalAttempts > 0
+    ? Math.round((stats.totalCorrect / stats.totalAttempts) * 100)
+    : null
 
   useEffect(() => { saveSoundOn(soundOn) }, [soundOn])
 
@@ -118,38 +124,27 @@ export default function HomeScreen() {
           </button>
         </div>
 
-        {/* System stats */}
+        {/* Lifetime stats — recorded at the end of every game (lib/stats.js) */}
         <div className="w-full max-w-4xl grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-surface-container-low p-6 rounded-lg flex flex-col gap-4">
-            <span className="font-display text-[10px] uppercase tracking-widest text-secondary">
-              Current Ranking
-            </span>
-            <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-bold font-display text-primary">#142</span>
-              <span className="text-xs text-secondary">Top 2%</span>
-            </div>
-          </div>
-
-          <div className="bg-surface-container-low p-6 rounded-lg flex flex-col gap-4 relative overflow-hidden">
-            <span className="font-display text-[10px] uppercase tracking-widest text-secondary">
-              Active Nodes
-            </span>
-            <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-bold font-display text-primary">2,841</span>
-            </div>
-            {/* Decorative gradient shimmer */}
-            <div className="absolute bottom-0 right-0 w-24 h-12 bg-gradient-to-t from-primary/5 to-transparent" />
-          </div>
-
-          <div className="bg-surface-container-low p-6 rounded-lg flex flex-col gap-4">
-            <span className="font-display text-[10px] uppercase tracking-widest text-secondary">
-              Server Latency
-            </span>
-            <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-bold font-display text-primary">14ms</span>
-              <span className="text-xs text-emerald-400">Stable</span>
-            </div>
-          </div>
+          <StatPanel
+            label="Best Score"
+            value={played ? stats.bestScore.toLocaleString() : '—'}
+            detail={played ? `Best streak 🔥 ${stats.bestStreak}` : 'Play a game to set one'}
+          />
+          <StatPanel
+            label="Games Played"
+            value={stats.gamesPlayed.toLocaleString()}
+            detail={played
+              ? `${stats.totalCorrect.toLocaleString()} question${stats.totalCorrect === 1 ? '' : 's'} solved`
+              : 'No games yet'}
+          />
+          <StatPanel
+            label="Accuracy"
+            value={accuracy === null ? '—' : `${accuracy}%`}
+            detail={accuracy === null
+              ? 'Share of your queries graded correct'
+              : `${stats.totalCorrect.toLocaleString()} of ${stats.totalAttempts.toLocaleString()} queries correct`}
+          />
         </div>
       </main>
 
@@ -188,6 +183,20 @@ export default function HomeScreen() {
           onToggleSound={() => setSoundOn(s => !s)}
         />
       )}
+    </div>
+  )
+}
+
+function StatPanel({ label, value, detail }) {
+  return (
+    <div className="bg-surface-container-low p-6 rounded-lg flex flex-col gap-4">
+      <span className="font-display text-[10px] uppercase tracking-widest text-secondary">
+        {label}
+      </span>
+      <div className="flex flex-col gap-1">
+        <span className="text-4xl font-bold font-display text-primary">{value}</span>
+        <span className="text-xs text-secondary">{detail}</span>
+      </div>
     </div>
   )
 }
