@@ -6,6 +6,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
  * All data flows via React Router location.state from GameScreen:
  *   {
  *     score:     number,        // final accumulated score
+ *     isNewBest: boolean,       // beat the previous lifetime best score
  *     maxStreak: number,        // highest streak reached during the run
  *     question:  object | null, // the question the player was stuck on
  *     playerSql: string,        // what the player last had in the editor
@@ -27,6 +28,7 @@ export default function GameOverScreen() {
   // (hard refresh, deep link, etc.) the screen still renders cleanly.
   const {
     score     = 0,
+    isNewBest = false,
     maxStreak = 0,
     question  = null,
     playerSql = '',
@@ -126,6 +128,11 @@ export default function GameOverScreen() {
                   </span>
                   <span className="text-secondary text-xs font-medium">PTS</span>
                 </div>
+                {isNewBest && (
+                  <p className="mt-2 font-display text-[10px] uppercase tracking-widest text-emerald-400">
+                    New personal best
+                  </p>
+                )}
               </div>
 
               {/* Highest streak — Rank column removed entirely */}
