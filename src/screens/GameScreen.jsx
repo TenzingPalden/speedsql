@@ -245,14 +245,17 @@ export default function GameScreen() {
    *
    * Correct   → +100 pts + time-left bonus, streak++, +10 s, advance question.
    * Incorrect → streak resets to 0, no time change, red flash, console opens.
+   * Small mistakes (typos, "double-quoted" strings) are auto-fixed by the
+   * engine and still count; the console opens to show what was corrected.
    * SQL error → same as incorrect; the console shows Postgres's message.
    * Empty     → silent no-op (no penalty).
    */
-  const handleRunQuery = useCallback(async () => {
+  const handleRunQuery = useCallback(async (editorSql) => {
     // Block submissions during the preparation window (editor is locked
     // behind the green overlay), while paused, and while already grading.
     if (prepMode || settingsOpen || runningRef.current) return
-    const trimmed  = sql.trim()
+    // The editor passes its current text (Shift+Enter); buttons pass an event.
+    const trimmed  = (typeof editorSql === 'string' ? editorSql : sql).trim()
     const question = currentQuestion
     if (!trimmed || !question) return
 
@@ -293,6 +296,8 @@ export default function GameScreen() {
       addTime()
       playCorrect()
       triggerFlash('correct')
+      // Show what was auto-corrected so the player learns the right syntax.
+      if (outcome.fixes?.length) setConsole(true)
       // 320 ms delay: green flash is visible before the panel swaps. Keep
       // submissions locked until then so a double-click can't score twice.
       runningRef.current = true
@@ -581,6 +586,7 @@ export default function GameScreen() {
                 value={sql}
                 onChange={setSql}
                 onRun={handleRunQuery}
+                schema={currentQuestion?.schema}
                 questionId={currentQuestion?.id ?? null}
               />
             </div>

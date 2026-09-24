@@ -5,11 +5,13 @@
  *
  * Protocol (request → response, correlated by `id`):
  *   { id, type: 'init' }                 → { id, ok, result: serverVersion }
- *   { id, type: 'run', question, sql }   → { id, ok, result: { columns, rows } }
+ *   { id, type: 'run', question, sql, forgiving }
+ *                                        → { id, ok, result: { columns, rows, fixes } }
+ *     forgiving: repair small mistakes (typos, "double-quoted" strings) and retry
  *   failures                             → { id, ok: false, error: message }
  */
 import { PGlite } from '@electric-sql/pglite'
-import { runOnFreshData } from './sqlCore'
+import { runForgiving, runOnFreshData } from './sqlCore'
 
 let dbPromise = null
 
@@ -27,7 +29,9 @@ self.onmessage = async ({ data }) => {
       const res = await db.query('SHOW server_version')
       result = res.rows[0].server_version
     } else if (type === 'run') {
-      result = await runOnFreshData(db, data.question, data.sql)
+      result = data.forgiving
+        ? await runForgiving(db, data.question, data.sql)
+        : { ...(await runOnFreshData(db, data.question, data.sql)), fixes: [] }
     } else {
       throw new Error(`Unknown message type: ${type}`)
     }
