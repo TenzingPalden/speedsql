@@ -151,3 +151,168 @@ export function compareResults(expected, actual, ordered) {
   }
   return { correct: true }
 }
+
+// ─── Forgiving grading: automatic repair of small mistakes ────────────────────
+/**
+ * The game shouldn't punish slips in SQL's own syntax, so when Postgres
+ * rejects a player's query for one we fix it and try again (up to MAX_FIXES):
+ *
+ *   • column "X" does not exist, X written in double quotes — it was meant
+ *     as a string: "Electronics" → 'Electronics'. (If X is a real column in
+ *     the wrong case, "First_Name", the quotes are dropped instead.)
+ *   • function x() does not exist — typo of a common function → nearest.
+ *   • syntax error — words one edit away from a SQL keyword (SELEC, FORM).
+ *
+ * Table, column and alias names are the player's to get right — misspelling
+ * one is still an error (the editor autocompletes them with Tab).
+ *
+ * Repairs are driven by the actual Postgres error, so a query that already
+ * runs is never touched, and a word is only replaced when exactly one
+ * candidate is close enough (no guessing between two equally close ones).
+ */
+const MAX_FIXES = 6
+
+const KEYWORDS = [
+  'select', 'from', 'where', 'group', 'order', 'by', 'having', 'join', 'inner',
+  'left', 'right', 'full', 'outer', 'cross', 'on', 'using', 'and', 'or', 'not',
+  'as', 'limit', 'offset', 'distinct', 'union', 'all', 'with', 'case', 'when',
+  'then', 'else', 'end', 'between', 'like', 'ilike', 'in', 'is', 'null', 'asc',
+  'desc', 'over', 'partition', 'rows', 'exists', 'true', 'false',
+]
+
+const FUNCTIONS = [
+  'count', 'sum', 'avg', 'min', 'max', 'round', 'rank', 'dense_rank',
+  'row_number', 'lag', 'lead', 'date_trunc', 'extract', 'coalesce', 'age',
+  'upper', 'lower', 'length', 'concat', 'abs', 'now', 'cast', 'nullif',
+]
+
+/** Optimal-string-alignment distance (Levenshtein + adjacent transposition). */
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 1; j <= b.length; j++) d[0][j] = j
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1)
+      }
+    }
+  }
+  return d[a.length][b.length]
+}
+
+/**
+ * The single candidate within `maxDist` edits of `word` (case-insensitive),
+ * or null when none — or more than one equally close — qualifies.
+ */
+function closest(word, candidates, maxDist) {
+  const w = word.toLowerCase()
+  let best = null, bestDist = Infinity, tie = false
+  for (const c of new Set(candidates)) {
+    const dist = editDistance(w, c)
+    if (dist < bestDist) { best = c; bestDist = dist; tie = false }
+    else if (dist === bestDist) tie = true
+  }
+  return best !== null && bestDist <= maxDist && !tie ? best : null
+}
+
+/** Typo tolerance: 1 edit for short names, 2 for longer ones. */
+const typoBudget = word => (word.length <= 4 ? 1 : 2)
+
+/** Apply `fn` to the parts of `sql` outside single-quoted string literals. */
+function outsideStrings(sql, fn) {
+  return sql
+    .split(/('(?:[^']|'')*')/)
+    .map((part, i) => (i % 2 ? part : fn(part)))
+    .join('')
+}
+
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+function replaceWord(sql, word, replacement) {
+  const re = new RegExp(`(?<![\\w"])${escapeRe(word)}(?![\\w"])`, 'gi')
+  return outsideStrings(sql, part => part.replace(re, replacement))
+}
+
+function replaceQuoted(sql, name, replacement) {
+  return outsideStrings(sql, part => part.split(`"${name}"`).join(replacement))
+}
+
+/** Table names, column names, and aliases the player defined with AS. */
+function knownNames(question, sql) {
+  const names = []
+  for (const t of question.schema) {
+    names.push(t.tableName.toLowerCase(), ...t.columns.map(c => c.name.toLowerCase()))
+  }
+  for (const m of sql.matchAll(/\bas\s+"?(\w+)"?/gi)) names.push(m[1].toLowerCase())
+  return names
+}
+
+/**
+ * Propose one repair for the error Postgres raised, or null.
+ * @returns {{ sql: string, note: string } | null}
+ */
+export function suggestFix(sql, message, question) {
+  let m
+
+  if ((m = message.match(/^column "(.+)" does not exist/)) && sql.includes(`"${m[1]}"`)) {
+    const name = m[1]
+    // Quoted identifier in the wrong case — drop the quotes, Postgres folds it.
+    const ident = knownNames(question, sql).find(n => n === name.toLowerCase())
+    if (ident) return { sql: replaceQuoted(sql, name, ident), note: `"${name}" → ${ident}` }
+    const literal = `'${name.replace(/'/g, "''")}'`
+    return { sql: replaceQuoted(sql, name, literal), note: `"${name}" → ${literal} (strings use single quotes)` }
+  }
+
+  if ((m = message.match(/^function (\w+)\(/))) {
+    const fn = closest(m[1], FUNCTIONS, typoBudget(m[1]))
+    if (!fn || fn === m[1].toLowerCase()) return null
+    return { sql: replaceWord(sql, m[1], fn), note: `${m[1]}() → ${fn}()` }
+  }
+
+  if (/^syntax error/.test(message)) {
+    // Find the first bare word that isn't valid anywhere but is one edit
+    // away from a keyword. Postgres often reports the token *after* the
+    // misspelling (FORM products → "near products"), so scan the query.
+    const valid = new Set([...KEYWORDS, ...FUNCTIONS, ...knownNames(question, sql)])
+    let fix = null
+    outsideStrings(sql, part => {
+      for (const w of part.replace(/"[^"]*"/g, ' ').match(/[A-Za-z_]\w*/g) ?? []) {
+        if (fix || w.length < 3 || valid.has(w.toLowerCase())) continue
+        const kw = closest(w, KEYWORDS, 1)
+        if (kw) fix = { word: w, kw }
+      }
+      return part
+    })
+    if (!fix) return null
+    return { sql: replaceWord(sql, fix.word, fix.kw.toUpperCase()), note: `${fix.word} → ${fix.kw.toUpperCase()}` }
+  }
+
+  return null
+}
+
+/**
+ * Run a player's query, repairing small mistakes Postgres complains about.
+ * Throws the *original* error if the query can't be repaired into one that
+ * runs — the player should see what they actually wrote wrong.
+ *
+ * @returns {{ columns: string[], rows: (string|null)[][], fixes: string[] }}
+ */
+export async function runForgiving(db, question, sql) {
+  const fixes = []
+  let current = sql
+  let firstError = null
+  for (let attempt = 0; attempt <= MAX_FIXES; attempt++) {
+    try {
+      return { ...(await runOnFreshData(db, question, current)), fixes }
+    } catch (err) {
+      firstError ??= err
+      const fix = suggestFix(current, err?.message ?? '', question)
+      if (!fix || fix.sql === current) break
+      current = fix.sql
+      fixes.push(fix.note)
+    }
+  }
+  throw firstError
+}

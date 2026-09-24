@@ -110,9 +110,9 @@ export function startEngine() {
   return readyPromise
 }
 
-async function run(question, sql) {
+async function run(question, sql, { forgiving = false } = {}) {
   try {
-    return await send({ type: 'run', question, sql }, QUERY_TIMEOUT_MS)
+    return await send({ type: 'run', question, sql, forgiving }, QUERY_TIMEOUT_MS)
   } catch (err) {
     if (err.timeout) {
       restartWorker()
@@ -141,10 +141,15 @@ export function prepareQuestion(question) {
 /**
  * Grade a submission.
  *
+ * Small mistakes Postgres rejects — misspelled names, "double-quoted"
+ * strings, keyword typos — are repaired automatically (see runForgiving in
+ * sqlCore) and listed in `fixes`, so they don't cost the player the point.
+ *
  * @returns {Promise<{
  *   verdict: 'correct' | 'incorrect' | 'error',
  *   message: string,
  *   result?: { columns: string[], rows: (string|null)[][] },
+ *   fixes?:  string[],
  *   mode:    'engine' | 'text',
  * }>}
  */
@@ -164,7 +169,7 @@ export async function checkAnswer(question, sql) {
 
   let result
   try {
-    result = await run(question, sql)
+    result = await run(question, sql, { forgiving: true })
   } catch (err) {
     return { verdict: 'error', message: err.message, mode: 'engine' }
   }
@@ -173,8 +178,9 @@ export async function checkAnswer(question, sql) {
   return {
     verdict: correct ? 'correct' : 'incorrect',
     message: correct ? 'Result matches the expected output.' : reason,
-    result,
-    mode: 'engine',
+    result:  { columns: result.columns, rows: result.rows },
+    fixes:   result.fixes ?? [],
+    mode:    'engine',
   }
 }
 

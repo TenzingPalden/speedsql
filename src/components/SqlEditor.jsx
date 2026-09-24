@@ -15,11 +15,12 @@ import Editor from '@monaco-editor/react'
  * @param {{
  *   value:      string,
  *   onChange:   (v: string) => void,
- *   onRun?:     () => void,               // Shift+Enter inside the editor
+ *   onRun?:     (sql: string) => void,    // Shift+Enter inside the editor
+ *   schema?:    SchemaTable[],            // current question's tables → autocomplete
  *   questionId: string | number | null,  // change triggers a hard clear
  * }} props
  */
-export default function SqlEditor({ value, onChange, onRun, questionId = null }) {
+export default function SqlEditor({ value, onChange, onRun, schema = [], questionId = null }) {
   /**
    * editorRef lets us call Monaco's imperative API directly.
    * We use editor.setValue('') on question change rather than relying on
@@ -31,6 +32,16 @@ export default function SqlEditor({ value, onChange, onRun, questionId = null })
   /** Latest onRun — the Monaco command is registered once, on mount. */
   const onRunRef = useRef(onRun)
   useEffect(() => { onRunRef.current = onRun }, [onRun])
+
+  /**
+   * Autocomplete for the current question's table and column names.
+   * Monaco completion providers are global per language, so we register one
+   * on mount that always reads the latest schema, and dispose it on unmount.
+   */
+  const schemaRef     = useRef(schema)
+  const completionRef = useRef(null)
+  useEffect(() => { schemaRef.current = schema }, [schema])
+  useEffect(() => () => completionRef.current?.dispose(), [])
 
   /**
    * When questionId changes (new question loaded), wipe the editor content
@@ -49,8 +60,39 @@ export default function SqlEditor({ value, onChange, onRun, questionId = null })
 
   function handleMount(editor, monaco) {
     editorRef.current = editor
-    // Shift+Enter runs the query instead of inserting a newline.
-    editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => onRunRef.current?.())
+    // Shift+Enter runs the query instead of inserting a newline. Pass the
+    // editor's own text so a keystroke React hasn't rendered yet still counts.
+    editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => onRunRef.current?.(editor.getValue()))
+
+    completionRef.current?.dispose()
+    completionRef.current = monaco.languages.registerCompletionItemProvider('sql', {
+      provideCompletionItems(model, position) {
+        const word  = model.getWordUntilPosition(position)
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber:   position.lineNumber,
+          startColumn:     word.startColumn,
+          endColumn:       word.endColumn,
+        }
+        const { Field, Struct } = monaco.languages.CompletionItemKind
+        const columns = new Map()   // name → "table · TYPE" details (a column can be in several tables)
+        const suggestions = []
+        for (const table of schemaRef.current ?? []) {
+          suggestions.push({
+            label: table.tableName, kind: Struct, detail: 'table',
+            insertText: table.tableName, range, sortText: `1${table.tableName}`,
+          })
+          for (const col of table.columns) {
+            const detail = `${table.tableName} · ${col.type}`
+            columns.set(col.name, columns.has(col.name) ? `${columns.get(col.name)}, ${detail}` : detail)
+          }
+        }
+        for (const [name, detail] of columns) {
+          suggestions.push({ label: name, kind: Field, detail, insertText: name, range, sortText: `0${name}` })
+        }
+        return { suggestions }
+      },
+    })
     // ── Define SpeedSQL dark theme ──
     monaco.editor.defineTheme('speedsql', {
       base: 'vs-dark',
@@ -158,6 +200,10 @@ export default function SqlEditor({ value, onChange, onRun, questionId = null })
         overviewRulerBorder:          false,
         // Word wrap
         wordWrap: 'off',
+        // Autocomplete — Tab accepts a suggestion; Enter always means newline.
+        acceptSuggestionOnEnter: 'off',
+        tabCompletion:           'on',
+        suggestOnTriggerCharacters: true,
       }}
     />
   )

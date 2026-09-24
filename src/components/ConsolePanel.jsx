@@ -18,6 +18,7 @@ const VERDICT_STYLE = {
  *     verdict: 'correct' | 'incorrect' | 'error',
  *     message: string,
  *     result?: { columns: string[], rows: (string|null)[][] },
+ *     fixes?:  string[],   // small mistakes that were auto-corrected
  *   }
  * }} props
  */
@@ -32,6 +33,7 @@ export default function ConsolePanel({ lastRun }) {
       ) : (
         <>
           <Status lastRun={lastRun} />
+          {lastRun.fixes?.length > 0 && <Fixes fixes={lastRun.fixes} />}
           {lastRun.result && <ResultTable result={lastRun.result} />}
         </>
       )}
@@ -47,6 +49,19 @@ function Status({ lastRun }) {
       <div className="text-xs leading-5 min-w-0">
         <span className={`font-display uppercase tracking-widest mr-2 ${style.color}`}>{style.label}</span>
         <span className="text-on-surface/80 font-mono break-words">{lastRun.message}</span>
+      </div>
+    </div>
+  )
+}
+
+function Fixes({ fixes }) {
+  return (
+    <div className="px-4 py-1.5 flex items-start gap-2 border-b border-outline-variant/10 flex-shrink-0
+                    text-xs text-amber-300/90">
+      <span className="material-symbols-outlined text-base">auto_fix_high</span>
+      <div className="leading-5 min-w-0">
+        <span className="font-display uppercase tracking-widest mr-2">Auto-fixed</span>
+        <span className="font-mono break-words">{fixes.join(' · ')}</span>
       </div>
     </div>
   )
